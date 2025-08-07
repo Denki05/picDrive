@@ -50,14 +50,14 @@
               {{-- Folder Saya --}}
               <li class="nav-item">
                 <a class="nav-link d-flex align-items-center" href="{{ url("drive/$pic_name") }}">
-                  <i class="bi bi-folder2 me-2 text-primary"></i> Folder Saya
+                  <i class="bi bi-folder2 me-2 text-primary"></i> Folder
                 </a>
               </li>
             </ul>
 
-            {{-- Ditandai --}}
+            {{-- Favorit --}}
             @if (!empty($favorites ?? []))
-              <h6 class="text-uppercase text-muted small">Ditandai</h6>
+              <h6 class="text-uppercase text-muted small">Favorite</h6>
               <ul class="nav flex-column mb-4">
                 @foreach ($favorites as $fav)
                   <li class="nav-item">
@@ -70,9 +70,9 @@
               </ul>
             @endif
 
-            {{-- Akses Terakhir (masih statis, bisa dinamis nanti) --}}
+            {{-- Recently (masih statis, bisa dinamis nanti) --}}
             @if (!empty($recents ?? []))
-              <h6 class="text-uppercase text-muted small">Akses Terakhir</h6>
+              <h6 class="text-uppercase text-muted small">Recently</h6>
               <ul class="nav flex-column mb-4">
                 @foreach ($recents as $recentPath)
                   <li class="nav-item">

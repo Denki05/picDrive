@@ -19,7 +19,7 @@ Route::get('/', function () {
 });
 
 Route::prefix('drive/{pic_name}')
-    ->middleware('validate.pic') // ini akan memanggil middleware ValidatePic
+    ->middleware('validate.pic') 
     ->group(function () {
         Route::get('/', [DriveController::class, 'index']);
         Route::get('/folder/{any?}', [DriveController::class, 'browse'])
@@ -29,6 +29,8 @@ Route::prefix('drive/{pic_name}')
         Route::post('/drive/favorite/toggle', [DriveController::class, 'toggleFavorite'])->name('drive.toggle_favorite');
         Route::post('/upload', [DriveController::class, 'uploadFile'])->name('drive.upload_file');
 
-        Route::get('/excel/view', [DriveController::class, 'viewExcel'])->name('drive.view_excel');
+        Route::get('/excel/{file}', [DriveController::class, 'viewExcel'])
+            ->where('file', '.*')
+            ->name('drive.excel_view');
         Route::post('/excel/update', [DriveController::class, 'updateExcel'])->name('drive.update_excel');
     });

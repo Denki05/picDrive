@@ -101,10 +101,7 @@
                 @csrf
                 <input type="hidden" name="pic_name" value="{{ $pic_name }}">
                 <input type="hidden" name="file_path" value="{{ $file }}">
-                <a href="{{ url("drive/$pic_name/excel/view?file=" . urlencode($relativeFile)) }}"
-                    class="btn btn-sm btn-outline-primary me-1">
-                    View
-                </a>
+                <a href="{{ route('drive.excel_view', ['pic_name' => $pic_name, 'file' => urlencode(Str::after($file, "files/$pic_name/")) ]) }}">Lihat Excel</a>
             </form>
         @endif
       </div>

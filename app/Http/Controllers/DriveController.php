@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\File;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Str;
 
@@ -136,60 +137,143 @@ class DriveController extends Controller
         File::put($file, json_encode($uploads));
     }
 
-    public function viewExcel(Request $request, $pic_name)
-    {
-        $file = $request->query('file');
-        $fullPath = storage_path('app/files/' . $pic_name . '/' . $file);
+    // public function viewExcel2($pic_name, $file)
+    // {
+    //     \Log::info("viewExcel called with:", [
+    //         'pic_name' => $pic_name,
+    //         'file' => $file,
+    //         'full_path' => storage_path("app/files/{$pic_name}/{$file}")
+    //     ]);
 
-        if (!file_exists($fullPath)) {
-            return abort(404, 'File tidak ditemukan');
+    //     $file = urldecode($file);
+    //     $path = storage_path("app/files/{$pic_name}/{$file}");
+
+    //     if (!file_exists($path)) {
+    //         abort(404, "File not found at: $path");
+    //     }
+
+    //     $luckysheetData = $this->excelToLuckysheet($path);
+    //     return view('drive.excel_view', compact('file', 'pic_name', 'luckysheetData'));
+    // }
+
+    public function viewExcel($pic_name, $file)
+    {
+        $file = urldecode($file);
+        $full = storage_path("app/files/{$pic_name}/{$file}");
+        if (!file_exists($full)) abort(404);
+
+        $reader = IOFactory::createReaderForFile($full);
+        $spreadsheet = $reader->load($full);
+
+        $sheets = [];
+        foreach ($spreadsheet->getAllSheets() as $index => $sheet) {
+            $rows = $sheet->toArray(null, true, true, true); // key A, B, C, ...
+            $celldata = [];
+            foreach ($rows as $r => $row) {
+                foreach ($row as $c => $v) {
+                    $colIndex = Coordinate::columnIndexFromString($c);
+                    $celldata[] = [
+                        'r' => $r - 1, // Luckysheet index from 0
+                        'c' => $colIndex - 1,
+                        'v' => ['v' => $v],
+                    ];
+                }
+            }
+
+            $sheets[] = [
+                'name' => $sheet->getTitle(),
+                'celldata' => $celldata,
+            ];
         }
 
-        $spreadsheet = IOFactory::load($fullPath);
-        $sheet = $spreadsheet->getActiveSheet();
-        $dataArray = $sheet->toArray();
+        $export = $this->excelToLuckysheet($full);
 
-        $luckysheetData = [
-            [
-                "name" => "Sheet1",
-                "color" => "",
-                "status" => 1,
-                "order" => 0,
-                "data" => array_map(function ($row) {
-                    return array_map(function ($cell) {
-                        return ['v' => $cell];
-                    }, $row);
-                }, $dataArray)
-            ]
-        ];
-
-        return view('drive.excel_view', compact('luckysheetData', 'file', 'pic_name'));
+        return view('drive.excel_view', compact('file', 'pic_name', 'export', 'sheets'));
     }
 
-    public function updateExcel(Request $request, $pic_name)
+    public function updateExcel(Request $r, $pic_name)
     {
-        $file = $request->input('file');
-        $luckysheetData = $request->input('luckysheet');
-        $fullPath = storage_path('app/files/' . $pic_name . '/' . $file);
+        $payload = $r->input('data');
+        $file = $r->input('file');
+        $full = storage_path("app/files/{$pic_name}/{$file}");
 
-        if (!$luckysheetData || !file_exists($fullPath)) {
-            return response()->json(['error' => 'Data tidak valid'], Response::HTTP_BAD_REQUEST);
+        if (!$payload || !file_exists($full)) {
+            return response()->json(['error' => 'Invalid'], 400);
         }
 
-        $sheetData = $luckysheetData[0]['data'] ?? [];
-        $spreadsheet = new Spreadsheet();
-        $sheet = $spreadsheet->getActiveSheet();
+        // Load spreadsheet lama
+        $reader = IOFactory::createReaderForFile($full);
+        $spreadsheet = $reader->load($full);
 
-        foreach ($sheetData as $rowIndex => $row) {
-            foreach ($row as $colIndex => $cell) {
-                $value = $cell['v'] ?? null;
-                $cellCoord = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::stringFromColumnIndex($colIndex + 1) . ($rowIndex + 1);
-                $sheet->setCellValue($cellCoord, $value);
+        // Hapus semua sheet jika ingin mulai dari awal
+        while ($spreadsheet->getSheetCount() > 0) {
+            $spreadsheet->removeSheetByIndex(0);
+        }
+
+        foreach ($payload as $sheetIndex => $sheetData) {
+            $sheetName = $sheetData['name'] ?? 'Sheet' . ($sheetIndex + 1);
+            $celldata = $sheetData['celldata'] ?? [];
+
+            $sheet = $spreadsheet->createSheet();
+            $sheet->setTitle($sheetName);
+
+            foreach ($celldata as $cell) {
+                $r = $cell['r'] ?? 0;
+                $c = $cell['c'] ?? 0;
+                $v = is_array($cell['v']) ? ($cell['v']['v'] ?? '') : '';
+
+                // Pastikan r dan c numerik
+                if (is_numeric($r) && is_numeric($c)) {
+                    $col = Coordinate::stringFromColumnIndex($c + 1);
+                    $row = $r + 1;
+                    $coord = "{$col}{$row}";
+                    $sheet->setCellValue($coord, $v);
+                }
             }
         }
 
-        IOFactory::createWriter($spreadsheet, 'Xlsx')->save($fullPath);
+        // Hapus sheet pertama kosong jika ada
+        if ($spreadsheet->getSheetCount() > 1 && $spreadsheet->getSheet(0)->getHighestRow() == 1) {
+            $spreadsheet->removeSheetByIndex(0);
+        }
+
+        $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $writer->save($full);
 
         return response()->json(['success' => true]);
+    }
+
+    private function excelToLuckysheet($filePath)
+    {
+        $spreadsheet = IOFactory::load($filePath);
+        $worksheets = $spreadsheet->getAllSheets();
+        $sheetsData = [];
+
+        foreach ($worksheets as $sheet) {
+            $celldata = [];
+            $maxRow = $sheet->getHighestRow();
+            $maxCol = \PhpOffice\PhpSpreadsheet\Cell\Coordinate::columnIndexFromString($sheet->getHighestColumn());
+
+            for ($i = 1; $i <= $maxRow; $i++) {
+                for ($j = 1; $j <= $maxCol; $j++) {
+                    $cell = $sheet->getCellByColumnAndRow($j, $i);
+                    $value = $cell->getValue();
+                    if ($value !== null) {
+                        $celldata[] = [
+                            'r' => $i - 1, // row index starts from 0
+                            'c' => $j - 1, // column index starts from 0
+                            'v' => ['v' => $value],
+                        ];
+                    }
+                }
+            }
+
+            $sheetsData[] = [
+                'name' => $sheet->getTitle(),
+                'celldata' => $celldata,
+            ];
+        }
+
+        return $sheetsData;
     }
 }
