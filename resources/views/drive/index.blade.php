@@ -37,18 +37,12 @@
 
 <div class="card mb-4">
   <div class="card-body">
-    <form action="{{ route('drive.upload_file', ['pic_name' => $pic_name]) }}" method="POST" enctype="multipart/form-data" class="row g-2 align-items-center">
+    <form action="{{ route('drive.upload_file', ['pic_name' => $pic_name]) }}"
+          class="dropzone"
+          id="upload-dropzone"
+          enctype="multipart/form-data">
       @csrf
       <input type="hidden" name="path" value="{{ $path }}">
-
-      <div class="col-auto">
-        <input type="file" name="upload_file" accept=".xlsx" class="form-control" required>
-      </div>
-      <div class="col-auto">
-        <button type="submit" class="btn btn-primary">
-          <i class="bi bi-upload"></i> Upload
-        </button>
-      </div>
     </form>
   </div>
 </div>
@@ -122,3 +116,32 @@
 @endforeach
 </div>
 @endsection
+
+@push('styles')
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.css" />
+@endpush
+
+@push('scripts')
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dropzone/5.9.3/min/dropzone.min.js"></script>
+
+<script>
+  Dropzone.options.uploadDropzone = {
+    paramName: 'upload_file',
+    maxFilesize: 10, // MB
+    acceptedFiles: '.xlsx',
+    addRemoveLinks: true,
+    init: function () {
+      this.on('success', function (file, response) {
+        console.log('Upload sukses', response);
+        // Reload untuk menampilkan file yang baru diupload
+        location.reload();
+      });
+
+      this.on('error', function (file, errorMessage) {
+        console.error('Upload gagal:', errorMessage);
+        alert('Upload gagal: ' + errorMessage.message ?? errorMessage);
+      });
+    }
+  };
+</script>
+@endpush

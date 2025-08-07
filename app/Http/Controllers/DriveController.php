@@ -9,6 +9,7 @@ use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use Symfony\Component\HttpFoundation\Response;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 class DriveController extends Controller
@@ -20,27 +21,33 @@ class DriveController extends Controller
 
     public function browse($pic_name, $any = null)
     {
-        // Cek dan buat folder default PIC jika belum ada
         $basePath = 'files/' . $pic_name;
+
+        // Cek apakah folder root PIC sudah ada, jika belum maka buat berdasarkan API
         if (!Storage::exists($basePath)) {
-            $this->createDefaultFoldersForPic($pic_name);
+            $matched = $this->createFoldersFromApi($pic_name);
+
+            // Jika tidak ada officer yang cocok, abort 403 atau redirect
+            if (!$matched) {
+                abort(403, "PIC '{$pic_name}' tidak ditemukan di data API.");
+            }
         }
 
         $path = $basePath . ($any ? '/' . $any : '');
 
-        // Simpan sebagai akses terakhir
         $this->logRecentAccess($pic_name, Str::after($path, 'files/' . $pic_name . '/'));
 
         $items = Storage::files($path);
         $folders = Storage::directories($path);
 
-        // Favorit
-        $fileFav = storage_path("app/favorites_{$pic_name}.json");
-        $favorites = File::exists($fileFav) ? json_decode(File::get($fileFav), true) : [];
+        // Ambil data favorit dan recent
+        $favorites = File::exists(storage_path("app/favorites_{$pic_name}.json"))
+            ? json_decode(File::get(storage_path("app/favorites_{$pic_name}.json")), true)
+            : [];
 
-        // Akses terakhir
-        $fileRecent = storage_path("app/recent_{$pic_name}.json");
-        $recents = File::exists($fileRecent) ? json_decode(File::get($fileRecent), true) : [];
+        $recents = File::exists(storage_path("app/recent_{$pic_name}.json"))
+            ? json_decode(File::get(storage_path("app/recent_{$pic_name}.json")), true)
+            : [];
 
         return view('drive.index', compact('items', 'folders', 'pic_name', 'path', 'favorites', 'recents'));
     }
@@ -56,14 +63,40 @@ class DriveController extends Controller
         return back()->with('success', 'Excel berhasil diedit.');
     }
 
-    private function createDefaultFoldersForPic($pic)
+    private function createFoldersFromApi($pic_name)
     {
-        $struktur = config('drive_structure.default_structure', []);
+        try {
+            $response = Http::get('http://ppiapps.sytes.net:8000/api/member');
 
-        foreach ($struktur as $prov => $kotas) {
-            foreach ($kotas as $kota) {
-                Storage::makeDirectory("files/{$pic}/{$prov}/{$kota}");
+            if (!$response->successful()) {
+                \Log::error('Gagal akses API member');
+                return false;
             }
+
+            $data = $response->json();
+
+            $matched = false;
+
+            foreach ($data as $item) {
+                if (strtolower($item['officer']) !== strtolower($pic_name)) continue;
+
+                $matched = true;
+
+                $prov = Str::slug($item['provinsi'], '_');
+                $city = Str::slug($item['kota'], '_');
+                $customer = Str::slug($item['name'], '_');
+
+                $folderPath = "files/{$pic_name}/{$prov}/{$city}/{$customer}";
+
+                if (!Storage::exists($folderPath)) {
+                    Storage::makeDirectory($folderPath);
+                }
+            }
+
+            return $matched;
+        } catch (\Exception $e) {
+            \Log::error("Gagal create folder dari API: " . $e->getMessage());
+            return false;
         }
     }
 
