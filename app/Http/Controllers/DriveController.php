@@ -11,6 +11,7 @@ use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Validator;
 
 class DriveController extends Controller
 {
@@ -95,6 +96,7 @@ class DriveController extends Controller
 
             return $matched;
         } catch (\Exception $e) {
+            dd($e);
             \Log::error("Gagal create folder dari API: " . $e->getMessage());
             return false;
         }
@@ -308,5 +310,65 @@ class DriveController extends Controller
         }
 
         return $sheetsData;
+    }
+    
+    public function apiViewExcelAuto(Request $request)
+    {
+        $token = $request->header('Authorization');
+        if ($token !== env('DRIVE_API_TOKEN')) {
+            return response()->json(['error' => 'Unauthorized'], 401);
+        }
+    
+        $validator = Validator::make($request->all(), [
+            'pic' => 'required|string',
+            'prov' => 'required|string',
+            'kota' => 'required|string',
+            'customer' => 'required|string',
+        ]);
+    
+        if ($validator->fails()) {
+            return response()->json(['error' => 'Parameter tidak lengkap atau salah', 'details' => $validator->errors()], 422);
+        }
+    
+        $pic = $request->pic;
+        $prov = $request->prov;
+        $kota = $request->kota;
+        $customer = $request->customer;
+    
+        $folderPath = storage_path("app/files/{$pic}/{$prov}/{$kota}/{$customer}");
+    
+        if (!is_dir($folderPath)) {
+            return response()->json(['error' => 'Folder tidak ditemukan'], 404);
+        }
+    
+        $files = glob($folderPath . '/*.xlsx');
+    
+        if (empty($files)) {
+            return response()->json(['error' => 'Tidak ada file Excel ditemukan'], 404);
+        }
+    
+        $firstFile = $files[0];
+    
+        try {
+            $spreadsheet = IOFactory::load($firstFile);
+            $sheetsData = [];
+        
+            foreach ($spreadsheet->getAllSheets() as $sheet) {
+                $rows = $sheet->toArray();
+                $sheetsData[] = [
+                    'name' => $sheet->getTitle(),
+                    'data' => $rows
+                ];
+            }
+        
+            // Langsung return array, bukan dibungkus 'file' dan 'data'
+            return response()->json($sheetsData);
+        
+        } catch (\Exception $e) {
+            return response()->json([
+                'error' => 'Gagal membaca file Excel',
+                'message' => $e->getMessage()
+            ], 500);
+        }
     }
 }

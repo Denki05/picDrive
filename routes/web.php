@@ -19,7 +19,7 @@ Route::get('/', function () {
 });
 
 Route::prefix('drive/{pic_name}')
-    ->middleware('validate.pic') 
+    // ->middleware('validate.pic')
     ->group(function () {
         Route::get('/', [DriveController::class, 'index']);
         Route::get('/folder/{any?}', [DriveController::class, 'browse'])
