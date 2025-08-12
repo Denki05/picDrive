@@ -8,10 +8,15 @@ use Illuminate\Support\Facades\File;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\Color;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
 use Symfony\Component\HttpFoundation\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Log;
 
 class DriveController extends Controller
 {
@@ -70,7 +75,7 @@ class DriveController extends Controller
             $response = Http::get('http://ppiapps.sytes.net:8000/api/member');
 
             if (!$response->successful()) {
-                \Log::error('Gagal akses API member');
+                Log::error('Gagal akses API member');
                 return false;
             }
 
@@ -97,7 +102,7 @@ class DriveController extends Controller
             return $matched;
         } catch (\Exception $e) {
             dd($e);
-            \Log::error("Gagal create folder dari API: " . $e->getMessage());
+            Log::error("Gagal create folder dari API: " . $e->getMessage());
             return false;
         }
     }
@@ -129,13 +134,12 @@ class DriveController extends Controller
             ? json_decode(file_get_contents($filePath), true)
             : [];
 
-        // Jangan duplikat
         if (($key = array_search($path, $recent)) !== false) {
             unset($recent[$key]);
         }
 
-        array_unshift($recent, $path); // Masukkan paling atas
-        $recent = array_slice($recent, 0, 10); // Maks 10 entri
+        array_unshift($recent, $path);
+        $recent = array_slice($recent, 0, 10);
 
         file_put_contents($filePath, json_encode(array_values($recent)));
     }
@@ -153,10 +157,8 @@ class DriveController extends Controller
         $filename = $file->getClientOriginalName();
         $storagePath = $path . '/' . $filename;
 
-        // Simpan file ke storage
         Storage::putFileAs($path, $file, $filename);
 
-        // (Opsional) Simpan waktu upload untuk fitur “Upload Terakhir”
         $this->logUploadTime($pic_name, Str::after($storagePath, "files/$pic_name/"));
 
         return back()->with('success', 'File berhasil diupload.');
@@ -172,25 +174,6 @@ class DriveController extends Controller
         File::put($file, json_encode($uploads));
     }
 
-    // public function viewExcel2($pic_name, $file)
-    // {
-    //     \Log::info("viewExcel called with:", [
-    //         'pic_name' => $pic_name,
-    //         'file' => $file,
-    //         'full_path' => storage_path("app/files/{$pic_name}/{$file}")
-    //     ]);
-
-    //     $file = urldecode($file);
-    //     $path = storage_path("app/files/{$pic_name}/{$file}");
-
-    //     if (!file_exists($path)) {
-    //         abort(404, "File not found at: $path");
-    //     }
-
-    //     $luckysheetData = $this->excelToLuckysheet($path);
-    //     return view('drive.excel_view', compact('file', 'pic_name', 'luckysheetData'));
-    // }
-
     public function viewExcel($pic_name, $file)
     {
         $file = urldecode($file);
@@ -202,13 +185,13 @@ class DriveController extends Controller
 
         $sheets = [];
         foreach ($spreadsheet->getAllSheets() as $index => $sheet) {
-            $rows = $sheet->toArray(null, true, true, true); // key A, B, C, ...
+            $rows = $sheet->toArray(null, true, true, true);
             $celldata = [];
             foreach ($rows as $r => $row) {
                 foreach ($row as $c => $v) {
                     $colIndex = Coordinate::columnIndexFromString($c);
                     $celldata[] = [
-                        'r' => $r - 1, // Luckysheet index from 0
+                        'r' => $r - 1,
                         'c' => $colIndex - 1,
                         'v' => ['v' => $v],
                     ];
@@ -228,54 +211,201 @@ class DriveController extends Controller
 
     public function updateExcel(Request $r, $pic_name)
     {
-        $payload = $r->input('data');
+        Log::info("Memulai updateExcel untuk PIC: {$pic_name}, file: {$r->input('file')}");
+        Log::info("Data yang diterima:", $r->all());
+
+        $allSheetsData = $r->input('sheets');
         $file = $r->input('file');
         $full = storage_path("app/files/{$pic_name}/{$file}");
 
-        if (!$payload || !file_exists($full)) {
-            return response()->json(['error' => 'Invalid'], 400);
+        if (!$allSheetsData || !is_array($allSheetsData) || !file_exists($full)) {
+            Log::error('Payload tidak valid atau file tidak ditemukan.', ['payload' => $r->all()]);
+            return response()->json(['error' => 'Invalid payload or file not found.'], 400);
         }
 
-        // Load spreadsheet lama
-        $reader = IOFactory::createReaderForFile($full);
-        $spreadsheet = $reader->load($full);
+        try {
+            $reader = IOFactory::createReaderForFile($full);
+            $spreadsheet = $reader->load($full);
+        } catch (\Exception $e) {
+            Log::error('Gagal memuat spreadsheet: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to load spreadsheet: ' . $e->getMessage()], 500);
+        }
 
-        // Hapus semua sheet jika ingin mulai dari awal
         while ($spreadsheet->getSheetCount() > 0) {
             $spreadsheet->removeSheetByIndex(0);
         }
 
-        foreach ($payload as $sheetIndex => $sheetData) {
+        foreach ($allSheetsData as $sheetIndex => $sheetData) {
             $sheetName = $sheetData['name'] ?? 'Sheet' . ($sheetIndex + 1);
             $celldata = $sheetData['celldata'] ?? [];
+            $config = $sheetData['config'] ?? [];
 
             $sheet = $spreadsheet->createSheet();
             $sheet->setTitle($sheetName);
 
-            foreach ($celldata as $cell) {
-                $r = $cell['r'] ?? 0;
-                $c = $cell['c'] ?? 0;
-                $v = is_array($cell['v']) ? ($cell['v']['v'] ?? '') : '';
+            if (isset($config['columnlen'])) {
+                foreach ($config['columnlen'] as $colIndex => $width) {
+                    $sheet->getColumnDimension(Coordinate::stringFromColumnIndex($colIndex + 1))->setWidth($width / 7.5);
+                }
+            }
+            if (isset($config['rowlen'])) {
+                foreach ($config['rowlen'] as $rowIndex => $height) {
+                    $sheet->getRowDimension($rowIndex + 1)->setRowHeight($height);
+                }
+            }
 
-                // Pastikan r dan c numerik
-                if (is_numeric($r) && is_numeric($c)) {
-                    $col = Coordinate::stringFromColumnIndex($c + 1);
-                    $row = $r + 1;
+            foreach ($celldata as $cell) {
+                $r_coord = $cell['r'] ?? 0;
+                $c_coord = $cell['c'] ?? 0;
+                $value_obj = $cell['v'] ?? null;
+
+                if (is_numeric($r_coord) && is_numeric($c_coord) && $value_obj !== null) {
+                    $col = Coordinate::stringFromColumnIndex($c_coord + 1);
+                    $row = $r_coord + 1;
                     $coord = "{$col}{$row}";
-                    $sheet->setCellValue($coord, $v);
+                    $cellStyle = $sheet->getStyle($coord);
+
+                    // PENTING: Perbaikan ini mengatasi error sebelumnya dan memastikan nilai yang valid
+                    $cellValue = '';
+                    if (is_array($value_obj) && isset($value_obj['v'])) {
+                        $cellValue = $value_obj['v'];
+                    } else if (!is_array($value_obj)) {
+                        $cellValue = $value_obj;
+                    }
+
+                    $sheet->setCellValue($coord, $cellValue);
+
+                    if (is_array($value_obj)) {
+                        if (isset($value_obj['bl']) && $value_obj['bl']) {
+                            $cellStyle->getFont()->setBold(true);
+                        }
+                        if (isset($value_obj['it']) && $value_obj['it']) {
+                            $cellStyle->getFont()->setItalic(true);
+                        }
+                        if (isset($value_obj['ff'])) {
+                            $cellStyle->getFont()->setName($value_obj['ff']);
+                        }
+                        if (isset($value_obj['fs'])) {
+                            $cellStyle->getFont()->setSize($value_obj['fs']);
+                        }
+                        if (isset($value_obj['fc'])) {
+                            $cellStyle->getFont()->getColor()->setARGB(ltrim($value_obj['fc'], '#'));
+                        }
+                        if (isset($value_obj['bg'])) {
+                            $cellStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB(ltrim($value_obj['bg'], '#'));
+                        }
+                        if (isset($value_obj['vt'])) {
+                             $alignmentMap = [0 => Alignment::VERTICAL_TOP, 1 => Alignment::VERTICAL_CENTER, 2 => Alignment::VERTICAL_BOTTOM];
+                             if (isset($alignmentMap[$value_obj['vt']])) {
+                                $cellStyle->getAlignment()->setVertical($alignmentMap[$value_obj['vt']]);
+                             }
+                        }
+                        if (isset($value_obj['ht'])) {
+                             $alignmentMap = [0 => Alignment::HORIZONTAL_LEFT, 1 => Alignment::HORIZONTAL_CENTER, 2 => Alignment::HORIZONTAL_RIGHT];
+                             if (isset($alignmentMap[$value_obj['ht']])) {
+                                $cellStyle->getAlignment()->setHorizontal($alignmentMap[$value_obj['ht']]);
+                             }
+                        }
+                    }
+                }
+            }
+
+            if (isset($config['merge'])) {
+                foreach ($config['merge'] as $mergeRange) {
+                    $sheet->mergeCells($mergeRange);
+                }
+            }
+
+            if (isset($config['borderInfo'])) {
+                foreach ($config['borderInfo'] as $borderSet) {
+                    $borderType = $borderSet['borderType'] ?? null;
+                    $borderColor = ltrim($borderSet['color'] ?? '000000', '#');
+                    $borderStyle = $borderSet['style'] ?? 1;
+
+                    // PERBAIKAN UTAMA: Memastikan range adalah string sebelum digunakan
+                    if (isset($borderSet['range']) && is_array($borderSet['range'])) {
+                        foreach ($borderSet['range'] as $rangeData) {
+                            if (is_array($rangeData) && isset($rangeData['row']) && isset($rangeData['column'])) {
+                                $startRow = $rangeData['row'][0] + 1;
+                                $endRow = $rangeData['row'][1] + 1;
+                                $startCol = Coordinate::stringFromColumnIndex($rangeData['column'][0] + 1);
+                                $endCol = Coordinate::stringFromColumnIndex($rangeData['column'][1] + 1);
+                                $range = "{$startCol}{$startRow}:{$endCol}{$endRow}";
+
+                                if ($borderType) {
+                                    $phpSpreadsheetBorderStyle = $this->convertLuckysheetBorderStyleToPhpSpreadsheet($borderStyle);
+                                    $style = $sheet->getStyle($range);
+                                    $borders = $style->getBorders();
+            
+                                    switch ($borderType) {
+                                        case 'all':
+                                            $borders->getAllBorders()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'top':
+                                            $borders->getTop()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'bottom':
+                                            $borders->getBottom()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'left':
+                                            $borders->getLeft()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'right':
+                                            $borders->getRight()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'outer':
+                                            $borders->getOutline()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'innerHorizontal':
+                                            $borders->getInsideHorizontal()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                        case 'innerVertical':
+                                            $borders->getInsideVertical()->setBorderStyle($phpSpreadsheetBorderStyle)->setColor(new Color($borderColor));
+                                            break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        // Hapus sheet pertama kosong jika ada
-        if ($spreadsheet->getSheetCount() > 1 && $spreadsheet->getSheet(0)->getHighestRow() == 1) {
+        if ($spreadsheet->getSheetCount() > 1 && $spreadsheet->getSheet(0)->getHighestRow() == 0 && $spreadsheet->getSheet(0)->getHighestColumn() == 'A') {
+             $spreadsheet->removeSheetByIndex(0);
+        } else if ($spreadsheet->getSheetCount() > 1 && $spreadsheet->getSheet(0)->getHighestRow() == 1 && $spreadsheet->getSheet(0)->getCell('A1')->getValue() === null) {
             $spreadsheet->removeSheetByIndex(0);
         }
 
-        $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
-        $writer->save($full);
+        try {
+            $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
+            $writer->save($full);
+        } catch (\Exception $e) {
+            Log::error('Gagal menyimpan spreadsheet: ' . $e->getMessage());
+            return response()->json(['error' => 'Failed to save spreadsheet: ' . $e->getMessage()], 500);
+        }
 
-        return response()->json(['success' => true]);
+        Log::info("Update file berhasil.");
+        return response()->json(['success' => true, 'message' => 'File berhasil diperbarui!']);
+    }
+
+    private function convertLuckysheetBorderStyleToPhpSpreadsheet($luckysheetStyle)
+    {
+        switch ($luckysheetStyle) {
+            case 1: return Border::BORDER_THIN;
+            case 2: return Border::BORDER_MEDIUM;
+            case 3: return Border::BORDER_THICK;
+            case 4: return Border::BORDER_DOTTED;
+            case 5: return Border::BORDER_DASHED;
+            case 6: return Border::BORDER_DASHDOT;
+            case 7: return Border::BORDER_DASHDOTDOT;
+            case 8: return Border::BORDER_DOUBLE;
+            case 9: return Border::BORDER_HAIR;
+            case 10: return Border::BORDER_MEDIUMDASHED;
+            case 11: return Border::BORDER_MEDIUMDASHDOT;
+            case 12: return Border::BORDER_SLANTDASHDOT;
+            default: return Border::BORDER_NONE;
+        }
     }
 
     private function excelToLuckysheet($filePath)
@@ -295,8 +425,8 @@ class DriveController extends Controller
                     $value = $cell->getValue();
                     if ($value !== null) {
                         $celldata[] = [
-                            'r' => $i - 1, // row index starts from 0
-                            'c' => $j - 1, // column index starts from 0
+                            'r' => $i - 1,
+                            'c' => $j - 1,
                             'v' => ['v' => $value],
                         ];
                     }
@@ -311,48 +441,48 @@ class DriveController extends Controller
 
         return $sheetsData;
     }
-    
+
     public function apiViewExcelAuto(Request $request)
     {
         $token = $request->header('Authorization');
         if ($token !== env('DRIVE_API_TOKEN')) {
             return response()->json(['error' => 'Unauthorized'], 401);
         }
-    
+
         $validator = Validator::make($request->all(), [
             'pic' => 'required|string',
             'prov' => 'required|string',
             'kota' => 'required|string',
             'customer' => 'required|string',
         ]);
-    
+
         if ($validator->fails()) {
             return response()->json(['error' => 'Parameter tidak lengkap atau salah', 'details' => $validator->errors()], 422);
         }
-    
+
         $pic = $request->pic;
         $prov = $request->prov;
         $kota = $request->kota;
         $customer = $request->customer;
-    
+
         $folderPath = storage_path("app/files/{$pic}/{$prov}/{$kota}/{$customer}");
-    
+
         if (!is_dir($folderPath)) {
             return response()->json(['error' => 'Folder tidak ditemukan'], 404);
         }
-    
+
         $files = glob($folderPath . '/*.xlsx');
-    
+
         if (empty($files)) {
             return response()->json(['error' => 'Tidak ada file Excel ditemukan'], 404);
         }
-    
+
         $firstFile = $files[0];
-    
+
         try {
             $spreadsheet = IOFactory::load($firstFile);
             $sheetsData = [];
-        
+
             foreach ($spreadsheet->getAllSheets() as $sheet) {
                 $rows = $sheet->toArray();
                 $sheetsData[] = [
@@ -360,10 +490,9 @@ class DriveController extends Controller
                     'data' => $rows
                 ];
             }
-        
-            // Langsung return array, bukan dibungkus 'file' dan 'data'
+
             return response()->json($sheetsData);
-        
+
         } catch (\Exception $e) {
             return response()->json([
                 'error' => 'Gagal membaca file Excel',
